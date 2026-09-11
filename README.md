@@ -3,7 +3,7 @@
 **Hold Super. See what you can press.**
 
 Turn a Lenovo Legion RGB keyboard into a shortcut guide for Omarchy / Hyprland.
-Available shortcut keys glow pink, modifiers glow blue, and releasing Super
+Shortcut colors show their purpose, modifiers glow blue, and releasing Super
 restores your existing hardware lighting and animations.
 
 - Add Shift, Ctrl, or Alt to show shortcuts for that exact combination.
@@ -12,6 +12,25 @@ restores your existing hardware lighting and animations.
 - Checks modifiers every 20 ms. Restoring the profile includes a 50 ms firmware query.
 - Optional Omarchy bar button, terminal toggle, and Super+Alt+K binding.
 - Off by default, no login autostart, no compositor hooks or monkey-patching.
+
+## Shortcut colors
+
+| Color | Meaning |
+|---|---|
+| Purple | App launches |
+| Orange | Actions, menus, and unrecognized shortcuts |
+| Teal | Workspace operations |
+| Blue | Held modifier keys |
+
+Categories are inferred from binding descriptions because Hyprland's Lua
+callbacks hide their underlying commands. Known Omarchy app descriptions and
+`Launch …` / `Open app …` descriptions count as apps. This is a heuristic, not
+inspection of what a callback does. Add `[rgb:apps]`, `[rgb:actions]`, or
+`[rgb:workspaces]` to a binding's description to override it. Existing numeric
+workspace filtering still works with these tags. Colors refresh with bindings.
+When multiple bindings share a key, workspace color takes priority over apps,
+then actions; empty-workspace filtering still runs before choosing the color.
+Palette RGB values live in `PALETTE` in `src/helper.py`.
 
 ## Compatibility
 

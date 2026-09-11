@@ -122,6 +122,45 @@ def missing_code(description):
     return {'Make webcam overlay smaller': 34, 'Make webcam overlay larger': 35, 'Omarchy menu': 201}.get(description, 0)
 
 
+PALETTE = {
+    'apps': (180, 90, 255),
+    'actions': (255, 135, 35),
+    'workspaces': (50, 220, 170),
+    'modifiers': (90, 160, 255),
+}
+APP_DESCRIPTIONS = {
+    'terminal', 'browser', 'file manager', 'editor', 'tmux', 'herdr',
+    'music', 'music tui', 'docker', 'signal', 'obsidian', 'omawrite',
+    'passwords', 'chatgpt', 'grok', 'calendar', 'email', 'new email',
+    'youtube', 'whatsapp', 'google messages', 'google photos', 'google maps',
+    'x', 'x post', 'calculator', 'butler', 'lecture recorder', 'clipboard manager',
+}
+
+
+def category(binding):
+    """Descriptions are heuristics: Lua dispatchers hide the actual operation.
+
+    An explicit [rgb:apps/actions/workspaces] description tag takes precedence.
+    Unknown operations default to actions; exec alone does not imply an app.
+    """
+    description = binding.get('description', '').strip().lower()
+    tag = re.search(r'\[rgb:(apps|actions|workspaces)\]', description)
+    if tag:
+        return tag[1]
+    if 'workspace' in description or binding.get('dispatcher') in {
+        'workspace', 'movetoworkspace', 'movetoworkspacesilent',
+        'togglespecialworkspace', 'focusworkspaceoncurrentmonitor',
+    }:
+        return 'workspaces'
+    base = re.sub(r'\s*\([^)]*\)$', '', description)
+    # Calendar is also the stock Super+Ctrl+Alt+D shell panel.
+    if base == 'calendar' and binding.get('modmask') == 76:
+        return 'actions'
+    if base in APP_DESCRIPTIONS or description.startswith(('launch ', 'open app ')):
+        return 'apps'
+    return 'actions'
+
+
 def bindings():
     symbols = symbol_map()
     rows, skipped = [], set()
@@ -131,18 +170,19 @@ def bindings():
         key = b['key'].lower()
         if key.startswith(('mouse', 'switch:')):
             continue
-        code = b['keycode'] or (missing_code(b['description']) if not key else 0)
+        code = b['keycode'] or (missing_code(re.sub(r'\s*\[rgb:(?:apps|actions|workspaces)\]\s*', '', b['description']).strip()) if not key else 0)
         led = PHYSICAL.get(code) if code else symbols.get(key)
         if led is None:
             skipped.add(b['description'] or key)
             continue
-        target = re.fullmatch(r'Switch to workspace (\d+)', b['description'])
+        description = re.sub(r'\s*\[rgb:(?:apps|actions|workspaces)\]\s*', '', b['description']).strip()
+        target = re.fullmatch(r'Switch to workspace (\d+)', description)
         workspace = int(target[1]) if target else None
         # Swedish slash shares physical 7. Let workspace occupancy govern
         # plain Super+7 lighting even though monitor scaling also uses it.
         if b['modmask'] == 64 and key == 'slash' and led == PHYSICAL[16]:
             workspace = 7
-        rows.append((b['modmask'], b['submap'], str(b.get('submap_universal')).lower() == 'true', led, workspace))
+        rows.append((b['modmask'], b['submap'], str(b.get('submap_universal')).lower() == 'true', led, workspace, category(b)))
     return rows, sorted(skipped)
 
 
@@ -150,19 +190,31 @@ def occupied_workspaces():
     return frozenset(w['id'] for w in json.loads(ipc('j/workspaces')) if w['windows'] > 0)
 
 
-def selected(rows, mask, submap, occupied=None):
+def selected_colors(rows, mask, submap, occupied=None):
     if not mask & 64:
-        return set()
-    return {led for mods, sm, universal, led, workspace in rows
-            if mods == mask and (sm == submap or universal)
-            and (workspace is None or occupied is None or workspace in occupied)}
+        return {}
+    colors = {}
+    # Deterministic shared-key priority: workspace > app > action.
+    priority = {'actions': 0, 'apps': 1, 'workspaces': 2}
+    for mods, sm, universal, led, workspace, kind in rows:
+        if mods != mask or not (sm == submap or universal):
+            continue
+        if workspace is not None and occupied is not None and workspace not in occupied:
+            continue
+        if led not in colors or priority[kind] > priority[colors[led]]:
+            colors[led] = kind
+    return colors
+
+
+def selected(rows, mask, submap, occupied=None):
+    return set(selected_colors(rows, mask, submap, occupied))
 
 
 def packet(keys, available, mask=64):
     active_mods = {PHYSICAL[k] for bit, codes in MODIFIERS if bit & mask for k in codes if k in PHYSICAL}
     data = bytearray([7, 0xa1, 0xc0, 3])
     for key in sorted(available):
-        rgb = (255, 170, 230) if key in keys else ((90, 160, 255) if key in active_mods else (0, 0, 0))
+        rgb = PALETTE[keys[key]] if key in keys else (PALETTE['modifiers'] if key in active_mods else (0, 0, 0))
         data.extend(struct.pack('<HBBB', key, *rgb))
     if len(data) > RGB['SIZE']:
         raise RuntimeError('Too many keyboard LEDs')
@@ -209,7 +261,7 @@ def run(preview=False, duration=None):
                         controller.command(0xd0, 1, profile)
                     state = (mask, submap, occupied)
                     if state != previous:
-                        controller.send(packet(selected(rows, mask, submap, occupied), available, mask))
+                        controller.send(packet(selected_colors(rows, mask, submap, occupied), available, mask))
                     previous = state
                 elif overlay:
                     restore(controller)
