@@ -1,0 +1,2 @@
+# RGB controller in this Lenovo Legion 7 16IRX9; active local user only.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="048d", ATTRS{idProduct}=="c997", TAG+="uaccess"

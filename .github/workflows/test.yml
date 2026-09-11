@@ -1,0 +1,12 @@
+name: Tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: python3 tests/test_helper.py
+      - run: python3 tests/test_install.py
+      - run: python3 -m py_compile src/helper.py src/spectrum.py install.py

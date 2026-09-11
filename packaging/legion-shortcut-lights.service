@@ -1,0 +1,11 @@
+[Unit]
+Description=Optional Legion RGB shortcut lighting
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/legion-shortcut-lights run
+ExecStopPost=%h/.local/bin/legion-shortcut-lights clear
+Restart=no
+TimeoutStopSec=4
