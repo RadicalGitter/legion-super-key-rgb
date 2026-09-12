@@ -44,9 +44,9 @@ The hardware overlay, release restoration, CLI toggle and workspace filtering
 were tested on that laptop. The optional bar widget has manifest and static QML
 validation; visual bar testing is still pending.
 
-Requires Linux, Python 3.10+, systemd user services, libxkbcommon, and a Hyprland
+Requires Linux, system-managed Python 3.10+ at `/usr/bin/python3`, GNU coreutils (`env` and `timeout`), systemd user services, libxkbcommon, and a Hyprland
 build exposing `repl`, `hl.is_key_down`, and `hl.get_current_submap`. Notifications
-use `notify-send` (Arch package `libnotify`). The bar widget additionally requires
+use `/usr/bin/notify-send` (Arch package `libnotify`). The bar widget additionally requires
 Omarchy Quattro's Quickshell shell. The helper works independently of which shell
 is visible, including when using Caelestia on the tested Omarchy installation.
 
@@ -57,10 +57,10 @@ Clone and inspect the repository, then run the installer as your normal user:
 ```bash
 git clone https://github.com/RadicalGitter/legion-super-key-rgb.git
 cd legion-super-key-rgb
-python3 install.py
+/usr/bin/python3 -I install.py
 ```
 
-This installs a command in `~/.local/bin`, two Python files in
+This installs a command in `~/.local/bin`, four Python files in
 `~/.local/share/legion-super-key-rgb`, and a user service. It backs up any existing
 files it replaces and refuses updates over locally modified installed files.
 It stops an already-running helper and leaves it **off**. It does not edit your
@@ -161,21 +161,55 @@ Swedish-layout exception: plain Super+slash shares physical 7 with workspace 7.
 Its light follows workspace 7 occupancy; the monitor-scaling shortcut still works
 when dark. Other shortcuts sharing a key can keep that key lit.
 
+## Execution and local-file protections
+
+- System commands use verified absolute root-owned paths. No PATH search, shell
+  execution, or inherited subprocess environment is used. Python entry points
+  use `/usr/bin/python3 -I`; HOME and runtime paths come from the current UID,
+  and only a validated Hyprland instance signature is carried into the helper.
+- The user service removes native loader injection variables before starting
+  `/usr/bin/env -i`, which supplies only its explicit environment to Python.
+  Quickshell processes use `clearEnvironment: true` and an explicit allowlist.
+- Helper/installer commands have a three-second deadline (notifications: two
+  seconds), a live 16 KiB combined stdout/stderr cap, and their own process group.
+  Timeout, excess output, interruption, and completion all reap/kill that group.
+  The bar adds GNU timeout envelopes of five seconds for status and eighteen
+  seconds for toggles, with a one-second kill grace. It attaches no output
+  collectors. A toggle failure appears in the tooltip rather than launching an
+  additional unbounded notification command.
+- Hyprland socket reads have a total 750 ms deadline and a 2 MiB response cap.
+- Installer destinations, originals/backups, JSON state and helper lock files
+  are traversed through owned directory descriptors with `O_NOFOLLOW`. File
+  checks reject nonregular files, hardlinks, other owners and writable-by-others
+  entries. Locks are not opened in append/truncate mode and have bounded waits.
+- Updates use randomized exclusive temporary files, descriptor-relative atomic
+  replacement, and file/directory fsync. Directory descriptors stay pinned if
+  a pathname is renamed or replaced; redirected symlinks are never followed.
+
+These protections assume a trusted OS and trusted user-owned project code.
+They are not a sandbox against an attacker already able to replace this plugin's
+code or control the user's session. Device I/O and hardware restoration can
+still fail on disconnection. See `tests/test_safety.py` for exercised boundaries.
+
 ## Update / remove
 
-To update, pull a reviewed version in this checkout and rerun `python3 install.py`.
+To update, pull a reviewed version in this checkout and rerun `/usr/bin/python3 -I install.py`.
 It leaves lighting off. The bar plugin is managed separately by Omarchy.
 
 To remove the helper:
 
 ```bash
 legion-shortcut-lights off
-python3 install.py --uninstall
+/usr/bin/python3 -I install.py --uninstall
 ```
 
 Uninstall restores files that predated installation and removes unchanged files
 it installed. Modified files and backup records are retained for manual review.
-It leaves directories in place. If you added the Lua shortcut, remove those two
+It leaves directories in place. Symlinked, hardlinked, or group/world-writable
+files and directories fail closed instead of being repaired automatically.
+Installation records are written before each destination replacement; if an
+interrupted update reports a mismatch, review the retained original backup and
+installation record before proceeding. If you added the Lua shortcut, remove those two
 lines (or restore your previous binding), then reload and check Hyprland.
 
 If you installed the bar plugin, remove it with:
@@ -192,13 +226,16 @@ keyboard profiles and presets are never removed.
 
 ```bash
 journalctl --user -u legion-shortcut-lights.service -n 50
-python3 tests/test_helper.py
-python3 tests/test_install.py
+/usr/bin/python3 -I tests/test_helper.py
+/usr/bin/python3 -I tests/test_install.py
+/usr/bin/python3 -I tests/test_safety.py
 omarchy plugin validate .
 ```
 
 `check` requires a running Hyprland session; automated tests use mocks and a
 temporary home directory, without touching hardware or the running desktop.
+`--prefix <test-home> --no-reload` is an installer test mode; it skips systemd
+interaction and installed-tool checks, but retains filesystem validation.
 A `PermissionError` opening hidraw usually means the udev/seat access setup is
 missing. A modifier-query error means the installed Hyprland API is incompatible;
 leave the helper off and report your version and the error.

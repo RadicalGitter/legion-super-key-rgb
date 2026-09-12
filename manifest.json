@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.radicalgitter.legion-super-key-rgb",
   "name": "Legion Super Key RGB",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "RadicalGitter",
   "license": "GPL-3.0-only",
   "description": "Light available Super shortcuts on a Legion Spectrum keyboard, hide empty workspaces, and restore your theme on release. Manual hardware setup required.",

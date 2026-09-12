@@ -31,3 +31,32 @@ with tempfile.TemporaryDirectory(prefix='legion-install-test-') as tmp:
     assert not (home/'.local/share/legion-super-key-rgb/helper.py').exists()
     install('--uninstall')  # Safe repeated removal.
 print('Passed: installation, repeated update, modified-file protection, uninstall, backup restoration')
+
+# Exercise the actual installer against hostile destination/record/backup paths.
+for attack in ('ancestor', 'record', 'backup', 'destination', 'install-lock'):
+    with tempfile.TemporaryDirectory(prefix='legion-installer-attack-') as tmp:
+        home = Path(tmp)/'home'; home.mkdir()
+        outside = Path(tmp)/'outside'; outside.mkdir()
+        victim = outside/'victim'; victim.write_text('KEEP')
+        state = home/'.local/state/legion-super-key-rgb-install'
+        if attack == 'ancestor':
+            (home/'.local').symlink_to(outside, target_is_directory=True)
+        else:
+            state.mkdir(parents=True)
+            if attack == 'record':
+                (state/'files.json').symlink_to(victim)
+            elif attack == 'backup':
+                command = home/'.local/bin/legion-shortcut-lights'
+                command.parent.mkdir(parents=True); command.write_text('old')
+                (state/'backups').symlink_to(outside, target_is_directory=True)
+            elif attack == 'destination':
+                command = home/'.local/bin/legion-shortcut-lights'
+                command.parent.mkdir(parents=True); command.symlink_to(victim)
+            else:
+                (state/'install.lock').symlink_to(victim)
+        p = subprocess.run([sys.executable,str(ROOT/'install.py'),'--prefix',str(home),'--no-reload'],
+                           capture_output=True,text=True,timeout=5)
+        assert p.returncode != 0, attack
+        assert victim.read_text() == 'KEEP', attack
+        assert list(outside.iterdir()) == [victim], attack
+print('Passed: installer rejects symlinked ancestors, records, backups, destinations and locks without redirected writes')

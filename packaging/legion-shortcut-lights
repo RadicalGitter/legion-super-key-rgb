@@ -1,4 +1,6 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
+import pwd
+import os
 import runpy
 from pathlib import Path
-runpy.run_path(str(Path.home() / '.local/share/legion-super-key-rgb/helper.py'), run_name='__main__')
+runpy.run_path(str(Path(pwd.getpwuid(os.getuid()).pw_dir) / '.local/share/legion-super-key-rgb/entry.py'), run_name='__main__')

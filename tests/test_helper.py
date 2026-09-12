@@ -40,11 +40,12 @@ assert m['selected'](workspace_rows, 64, '', {2}) == {24, 99}
 with patch.dict(g, ipc=lambda _: '[{"id":1,"windows":2},{"id":2,"windows":0}]'):
     assert m['occupied_workspaces']() == {1}
 c = FakeController()
+real_close = __import__('os').close
 with tempfile.TemporaryDirectory() as tmp:
     with patch.dict(g, STATE=Path(tmp)), patch.dict(rgb, Controller=lambda: c), \
          patch.dict(g, bindings=lambda: (rows, [])), patch.dict(g, occupied_workspaces=lambda: frozenset({1})), \
          patch.dict(g, modifier_state=__import__('unittest.mock', fromlist=['Mock']).Mock(side_effect=[(0,''), (64,''), RuntimeError('IPC lost')])), \
-         patch('os.close') as close, patch('time.sleep'), patch('signal.signal'):
+         patch('os.close', side_effect=lambda fd: None if fd == -1 else real_close(fd)) as close, patch('time.sleep'), patch('signal.signal'):
         try:
             m['run']()
         except RuntimeError as e:
@@ -52,7 +53,7 @@ with tempfile.TemporaryDirectory() as tmp:
         else:
             raise AssertionError('Expected IPC failure')
         assert c.commands == [(0xd0, 1, 1), (0xd0, 2, 1)]
-        close.assert_called_once_with(-1)
+        close.assert_any_call(-1)
 print('Passed: exact modifiers/submaps, missing keycodes, packet format, IPC failure cleanup')
 
 for desc, expected in [('Browser (private)', 'apps'), ('Close window', 'actions'),

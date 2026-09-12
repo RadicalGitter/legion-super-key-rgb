@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 """Optional Legion shortcut lighting. No Hyprland configuration changes.
 
 Read-only Lua queries go through the IPC socket; no callbacks or globals are
@@ -19,10 +19,15 @@ import subprocess
 import sys
 import time
 
-HOME = Path.home()
+SAFETY = globals().get('SAFETY') or runpy.run_path(str(Path(__file__).absolute().with_name('safety.py')))
+SafeDir = SAFETY['SafeDir']
+run_command = SAFETY['run_command']
+HOME = SAFETY['HOME']
 UNIT = 'legion-shortcut-lights.service'
-RGB = runpy.run_path(str(Path(__file__).resolve().with_name('spectrum.py')))
-RUNTIME = Path(os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}'))
+with SafeDir(Path(__file__).absolute().parent) as source:
+    RGB = {'__name__': 'spectrum'}
+    exec(compile(source.read('spectrum.py')[0], 'spectrum.py', 'exec'), RGB)
+RUNTIME = SAFETY['RUNTIME']
 STATE = HOME / '.local/state/legion-rgb'
 # XKB physical keycodes -> Spectrum ISO LED IDs. Fn is handled by firmware.
 PHYSICAL = {9: 1, 22: 0x38, 23: 0x40, 66: 0x55, 36: 0x77,
@@ -51,11 +56,23 @@ def ipc(command):
         raise RuntimeError('No Hyprland session in this environment')
     path = RUNTIME / 'hypr' / signature / '.socket.sock'
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        deadline = time.monotonic() + 0.75
         s.settimeout(0.75)
         s.connect(str(path))
         s.sendall(command.encode())
         chunks = []
-        while data := s.recv(65536):
+        total = 0
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Hyprland IPC deadline exceeded')
+            s.settimeout(remaining)
+            data = s.recv(65536)
+            if not data:
+                break
+            total += len(data)
+            if total > 2 * 1024 * 1024:
+                raise RuntimeError('Hyprland IPC response exceeds limit')
             chunks.append(data)
         return b''.join(chunks).decode().strip()
 
@@ -74,7 +91,7 @@ def symbol_map():
     kb = next((k for k in keyboards if k.get('main')), keyboards[0])
     class Names(C.Structure):
         _fields_ = [(n, C.c_char_p) for n in ('rules', 'model', 'layout', 'variant', 'options')]
-    lib = C.CDLL('libxkbcommon.so.0')
+    lib = C.CDLL(SAFETY['trusted_system_file']('/usr/lib/libxkbcommon.so.0'))
     funcs = {
         'xkb_context_new': ([C.c_int], C.c_void_p),
         'xkb_keymap_new_from_names': ([C.c_void_p, C.POINTER(Names), C.c_int], C.c_void_p),
@@ -232,15 +249,13 @@ def run(preview=False, duration=None):
     available = set(RGB['AVAILABLE_KEYS'])
     if skipped:
         print('Unmapped shortcuts (not lit): ' + ', '.join(skipped), flush=True)
-    STATE.mkdir(parents=True, exist_ok=True)
     stopping = False
     def stop(*_):
         nonlocal stopping
         stopping = True
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    with (STATE / 'controller.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with SafeDir(STATE, create=True) as state_dir, state_dir.lock('controller.lock'):
         controller = RGB['Controller']()
         overlay = False
         try:
@@ -281,13 +296,14 @@ def run(preview=False, duration=None):
 
 
 def systemctl(*args, check=True):
-    return subprocess.run(['systemctl', '--user', *args, UNIT], check=check, capture_output=True, text=True)
+    return run_command(['/usr/bin/systemctl', '--user', *args, UNIT], check=check)
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action', nargs='?', default='toggle', choices=['toggle','on','off','status','run','preview','check','clear'])
+    p.add_argument('action', nargs='?', default='toggle', choices=['toggle','on','off','status','status-exit','run','preview','check','clear'])
     p.add_argument('--duration', type=float)
+    p.add_argument('--quiet', action='store_true', help='Suppress toggle output and notifications for the bar')
     args = p.parse_args()
     if args.action in ('run', 'preview'):
         run(args.action == 'preview', 3 if args.action == 'preview' else args.duration)
@@ -295,22 +311,22 @@ def main():
         rows, skipped = bindings()
         print(json.dumps({'modifiers': modifier_state(), 'mapped_bindings': len(rows), 'super_keys': len(selected(rows,64,'',occupied_workspaces())), 'unmapped': skipped}, indent=2))
     elif args.action == 'clear':
-        with (STATE / 'controller.lock').open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with SafeDir(STATE, create=True) as state_dir, state_dir.lock('controller.lock'):
             controller = RGB['Controller']()
             try:
                 restore(controller)
             finally:
                 os.close(controller.fd)
+    elif args.action == 'status-exit':
+        sys.exit(systemctl('is-active', '--quiet', check=False).returncode)
     elif args.action == 'status':
         print('On' if systemctl('is-active', '--quiet', check=False).returncode == 0 else 'Off')
     else:
-        with (RUNTIME / 'legion-shortcut-toggle.lock').open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        with SafeDir(RUNTIME) as runtime_dir, runtime_dir.lock('legion-shortcut-toggle.lock', timeout=2):
             active = systemctl('is-active', '--quiet', check=False).returncode == 0
             turn_on = args.action == 'on' or (args.action == 'toggle' and not active)
             if turn_on:
-                subprocess.run(['systemctl', '--user', 'import-environment', 'HYPRLAND_INSTANCE_SIGNATURE'], check=True)
+                run_command(['/usr/bin/systemctl', '--user', 'import-environment', 'HYPRLAND_INSTANCE_SIGNATURE'])
                 systemctl('start')
                 time.sleep(0.6)
                 if systemctl('is-active', '--quiet', check=False).returncode:
@@ -318,8 +334,9 @@ def main():
             else:
                 systemctl('stop')
             message = 'On — hold Super to show shortcuts' if turn_on else 'Off — normal keyboard theme'
-            print(message)
-            subprocess.run(['notify-send', 'Shortcut lighting', message], check=False)
+            if not args.quiet:
+                print(message)
+                run_command(['/usr/bin/notify-send', 'Shortcut lighting', message], check=False, timeout=2)
 
 if __name__ == '__main__':
     try:

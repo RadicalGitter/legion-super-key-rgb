@@ -5,7 +5,13 @@ After=graphical-session.target
 
 [Service]
 Type=exec
-ExecStart=%h/.local/bin/legion-shortcut-lights run
-ExecStopPost=%h/.local/bin/legion-shortcut-lights clear
+# Remove loader hooks before even /usr/bin/env starts; env then closes the
+# environment for isolated Python. The installer verifies these system paths.
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_DEBUG_OUTPUT LD_PROFILE LD_PROFILE_OUTPUT LD_ORIGIN_PATH GLIBC_TUNABLES GCONV_PATH LOCPATH
+ExecStart=/usr/bin/env -i HOME=%h PATH=/usr/bin LANG=C.UTF-8 XDG_RUNTIME_DIR=%t HYPRLAND_INSTANCE_SIGNATURE=${HYPRLAND_INSTANCE_SIGNATURE} /usr/bin/python3 -I %h/.local/share/legion-super-key-rgb/entry.py run
+ExecStopPost=/usr/bin/env -i HOME=%h PATH=/usr/bin LANG=C.UTF-8 XDG_RUNTIME_DIR=%t /usr/bin/python3 -I %h/.local/share/legion-super-key-rgb/entry.py clear
 Restart=no
+KillMode=control-group
 TimeoutStopSec=4
+UMask=0077
+NoNewPrivileges=yes
