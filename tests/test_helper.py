@@ -52,7 +52,7 @@ with tempfile.TemporaryDirectory() as tmp:
             assert str(e) == 'IPC lost'
         else:
             raise AssertionError('Expected IPC failure')
-        assert c.commands == [(0xd0, 1, 1), (0xd0, 2, 1)]
+        assert c.commands == [(0xd0, 2, 1), (0xd0, 1, 1), (0xd0, 2, 1)]
         close.assert_any_call(-1)
 print('Passed: exact modifiers/submaps, missing keycodes, packet format, IPC failure cleanup')
 

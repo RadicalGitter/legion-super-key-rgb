@@ -10,4 +10,6 @@ jobs:
       - run: /usr/bin/python3 -I tests/test_helper.py
       - run: /usr/bin/python3 -I tests/test_install.py
       - run: /usr/bin/python3 -I tests/test_safety.py
+      - run: /usr/bin/python3 -I tests/test_resume.py
+      - run: /usr/bin/python3 -I tests/test_controller_setup.py
       - run: /usr/bin/python3 -I -m py_compile src/helper.py src/spectrum.py src/safety.py src/entry.py install.py

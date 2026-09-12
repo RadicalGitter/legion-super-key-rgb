@@ -5,6 +5,8 @@ Read-only Lua queries go through the IPC socket; no callbacks or globals are
 installed. Hardware protocol and ISO positions: LenovoLegionToolkit (see README).
 """
 import argparse
+import errno
+import threading
 import ctypes as C
 import fcntl
 import json
@@ -88,6 +90,8 @@ def modifier_state():
 def symbol_map():
     """Resolve symbols against the active keyboard layout, including Swedish /."""
     keyboards = json.loads(ipc('j/devices'))['keyboards']
+    if not keyboards:
+        raise TemporarilyUnavailable('Hyprland reports no keyboard yet')
     kb = next((k for k in keyboards if k.get('main')), keyboards[0])
     class Names(C.Structure):
         _fields_ = [(n, C.c_char_p) for n in ('rules', 'model', 'layout', 'variant', 'options')]
@@ -243,56 +247,119 @@ def restore(controller):
     controller.command(0xd0, 2, profile)
 
 
+class TemporarilyUnavailable(Exception):
+    """Session data is temporarily absent (for example during seat resume)."""
+
+
+def suspend_offset():
+    # BOOTTIME includes suspend; MONOTONIC does not. No wall-clock/NTP dependency.
+    return time.clock_gettime(time.CLOCK_BOOTTIME) - time.monotonic()
+
+
+def recoverable(error):
+    return isinstance(error, TemporarilyUnavailable) or (
+        isinstance(error, OSError) and (isinstance(error, TimeoutError) or error.errno in {
+            errno.ENOENT, errno.ENODEV, errno.ENXIO, errno.EIO, errno.EACCES,
+            errno.EPERM, errno.EPIPE, errno.ECONNREFUSED, errno.ECONNRESET,
+            errno.ETIMEDOUT, errno.EBUSY, errno.EAGAIN,
+        }))
+
+
 def run(preview=False, duration=None):
-    rows, skipped = bindings()
-    modifier_state()  # Fail before opening hardware if queries are unavailable.
     available = set(RGB['AVAILABLE_KEYS'])
-    if skipped:
-        print('Unmapped shortcuts (not lit): ' + ', '.join(skipped), flush=True)
-    stopping = False
+    stopping = threading.Event()
     def stop(*_):
-        nonlocal stopping
-        stopping = True
+        stopping.set()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    # Keep the lock across recovery so another RGB writer cannot race retries.
+    # Filesystem trust/lock failures occur outside the recoverable I/O block.
     with SafeDir(STATE, create=True) as state_dir, state_dir.lock('controller.lock'):
-        controller = RGB['Controller']()
-        overlay = False
+        controller = None
+        overlay, previous = False, None
+        occupied, workspace_checked = frozenset(), 0.0
+        start = refreshed = time.monotonic()
+        offset = suspend_offset()
+        retry_delay, waiting, next_log = 0.25, False, 0.0
+
+        def disconnect():
+            nonlocal controller, overlay, previous
+            current, controller = controller, None
+            overlay, previous = False, None
+            if current is not None:
+                try:
+                    restore(current)
+                except Exception as error:
+                    print(f'Cleanup unavailable: {error}', flush=True)
+                else:
+                    print('Temporary lighting cleared; hardware theme restored', flush=True)
+                finally:
+                    os.close(current.fd)
+
+        print('Shortcut lighting enabled' + (f' ({duration:g}-second preview)' if preview else ''), flush=True)
         try:
-            start = refreshed = time.monotonic()
-            previous = None
-            occupied, workspace_checked = frozenset(), 0.0
-            print('Shortcut lighting running' + (f' ({duration:g}-second preview)' if preview else ''), flush=True)
-            while not stopping and (duration is None or time.monotonic() - start < duration):
-                mask, submap = (64, '') if preview else modifier_state()
-                now = time.monotonic()
-                if mask & 64:
-                    if not overlay or now - workspace_checked >= 0.1:
-                        occupied = occupied_workspaces()
-                        workspace_checked = now
-                    if not overlay:
-                        profile = controller.query(0xca)[4]
-                        overlay = True  # Ensure cleanup even if the start write fails.
-                        controller.command(0xd0, 1, profile)
-                    state = (mask, submap, occupied)
-                    if state != previous:
-                        controller.send(packet(selected_colors(rows, mask, submap, occupied), available, mask))
-                    previous = state
-                elif overlay:
-                    restore(controller)
-                    overlay, previous = False, None
-                # Restore on release before doing the periodic binding refresh.
-                if now - refreshed >= 5:
-                    rows, _ = bindings()
-                    refreshed = now
-                    previous = None
-                time.sleep(0.02)
+            while not stopping.is_set() and (duration is None or time.monotonic() - start < duration):
+                try:
+                    current_offset = suspend_offset()
+                    if current_offset - offset > 0.2:
+                        print('Resume detected; reopening RGB controller and refreshing bindings', flush=True)
+                        disconnect()
+                        retry_delay = 0.25
+                    offset = current_offset
+                    if controller is None:
+                        rows, skipped = bindings()
+                        if skipped and not waiting:
+                            print('Unmapped shortcuts (not lit): ' + ', '.join(skipped), flush=True)
+                        controller = RGB['Controller']()
+                        # Clear any stale overlay after a failed read or device reset.
+                        restore(controller)
+                        refreshed = time.monotonic()
+                        workspace_checked = 0.0
+                    mask, submap = (64, '') if preview else modifier_state()
+                    now = time.monotonic()
+                    if mask & 64:
+                        if not overlay or now - workspace_checked >= 0.1:
+                            occupied = occupied_workspaces()
+                            workspace_checked = now
+                        if not overlay:
+                            profile = controller.query(0xca)[4]
+                            overlay = True
+                            controller.command(0xd0, 1, profile)
+                        state = (mask, submap, occupied)
+                        if state != previous:
+                            controller.send(packet(selected_colors(rows, mask, submap, occupied), available, mask))
+                        previous = state
+                    elif overlay:
+                        restore(controller)
+                        overlay, previous = False, None
+                    if now - refreshed >= 5:
+                        rows, _ = bindings()
+                        refreshed = now
+                        previous = None
+                except (OSError, TemporarilyUnavailable) as error:
+                    if not recoverable(error):
+                        raise
+                    disconnect()
+                    now = time.monotonic()
+                    if not waiting or now >= next_log:
+                        print(f'Waiting for session/controller recovery: {error}', flush=True)
+                        next_log = now + 60
+                    waiting = True
+                    # Individual I/O attempts retain their deadlines. No process
+                    # restart loop: wait at most five seconds between attempts,
+                    # with an immediately interruptible off/stop operation.
+                    delay = retry_delay
+                    if duration is not None:
+                        delay = min(delay, max(0, duration - (now - start)))
+                    stopping.wait(delay)
+                    retry_delay = min(5.0, retry_delay * 2)
+                    continue
+                if waiting:
+                    print('Session/controller recovered; shortcut lighting ready', flush=True)
+                waiting, retry_delay = False, 0.25
+                stopping.wait(0.02)
         finally:
-            try:
-                restore(controller)
-                print('Temporary lighting cleared; hardware theme restored', flush=True)
-            finally:
-                os.close(controller.fd)
+            disconnect()
 
 
 def systemctl(*args, check=True):

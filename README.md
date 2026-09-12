@@ -69,20 +69,88 @@ or write any keyboard effect profiles. Ensure `~/.local/bin` is on your PATH.
 
 ### Controller access (one-time, only if not already configured)
 
-Inspect `packaging/70-legion-spectrum-rgb.rules` before installing it. It grants
-the active local user access to the matching controller's raw HID interface;
-that device interface also belongs to the keyboard, so this is broader than
-permission to change individual LED colors. The helper itself does not read
+The access rule grants the active local user access to the matching controller's
+raw HID interface, which also belongs to the keyboard. The helper does not read
 input-event devices or log ordinary keystrokes.
 
-If `/etc/udev/rules.d/70-legion-spectrum-rgb.rules` already exists, compare it
-and keep it if equivalent. Do not overwrite another rule without reviewing it.
-Otherwise, from an interactive terminal:
+**Review and paste the complete command below in your terminal.** The fixed rule
+and installation logic are passed as one literal argument, already captured
+before the privilege prompt. Root never opens a source file from this checkout,
+reads rule data from stdin, or imports local Python modules. Do not substitute
+`sudo install packaging/...`, command substitution, or a root-run repository
+script: those would reintroduce a mutable source at the privilege boundary.
+
+This checks every destination directory through no-follow descriptors and
+requires root ownership without group/world write access. It publishes the
+complete fixed rule atomically and exclusively. An identical safe rule is kept;
+a different rule, symlink, hardlink, FIFO or unsafe directory is refused. Missing
+system directories are not created. The `packaging/*.rules` file is a readable
+reference only and is never consumed by the privileged operation.
+
+<!-- fixed-controller-rule-start -->
+```bash
+/usr/bin/sudo /usr/bin/env -i PATH=/usr/bin LANG=C.UTF-8 /usr/bin/python3 -I -c '
+import os, secrets, stat
+
+OWNER = 0
+ROOT = "/"
+RULE = b"# RGB controller in this Lenovo Legion 7 16IRX9; active local user only.\nSUBSYSTEM==\"hidraw\", ATTRS{idVendor}==\"048d\", ATTRS{idProduct}==\"c997\", TAG+=\"uaccess\"\n"
+NAME = "70-legion-spectrum-rgb.rules"
+FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+def check_directory(fd):
+    info = os.fstat(fd)
+    if info.st_uid != OWNER or info.st_mode & 0o022:
+        raise PermissionError("Destination directory must be root-owned and not writable by others")
+
+if os.geteuid() != OWNER:
+    raise PermissionError("Root privileges required")
+directory = os.open(ROOT, FLAGS)
+try:
+    check_directory(directory)
+    for part in ("etc", "udev", "rules.d"):
+        child = os.open(part, FLAGS, dir_fd=directory)
+        os.close(directory)
+        directory = child
+        check_directory(directory)
+    try:
+        current = os.open(NAME, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
+    except FileNotFoundError:
+        temp = ".legion-" + secrets.token_hex(16)
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directory)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(RULE)
+                stream.flush()
+                os.fchmod(stream.fileno(), 0o644)
+                os.fsync(stream.fileno())
+            # Exclusive atomic publication: never replace an existing entry.
+            os.link(temp, NAME, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+        finally:
+            os.unlink(temp, dir_fd=directory)
+            os.fsync(directory)
+        print("Installed the fixed Spectrum access rule")
+    else:
+        try:
+            info = os.fstat(current)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != OWNER or info.st_nlink != 1 or info.st_mode & 0o022:
+                raise PermissionError("Unsafe existing destination; refusing to replace it")
+            if os.read(current, len(RULE) + 1) != RULE:
+                raise FileExistsError("Different rule already exists; review it manually")
+            print("The exact Spectrum rule is already installed; unchanged")
+        finally:
+            os.close(current)
+finally:
+    os.close(directory)
+'
+```
+<!-- fixed-controller-rule-end -->
+
+After the command succeeds:
 
 ```bash
-sudo install -Dm644 packaging/70-legion-spectrum-rgb.rules /etc/udev/rules.d/70-legion-spectrum-rgb.rules
-sudo udevadm control --reload-rules
-sudo udevadm trigger --subsystem-match=hidraw
+/usr/bin/sudo /usr/bin/udevadm control --reload-rules
+/usr/bin/sudo /usr/bin/udevadm trigger --subsystem-match=hidraw
 ```
 
 A logout/login may be needed for the active-seat access grant. No input-group
@@ -136,9 +204,12 @@ alone does not stop the independent helper; use `legion-shortcut-lights off`.
 The Python process sends read-only Lua queries over Hyprland's IPC socket for
 held modifiers and the current submap. It reads bindings and the active XKB
 layout separately, then sends a temporary Spectrum bitmap. It never registers
-Hyprland callbacks, replaces `hl.bind`, or reads `/dev/input`. An IPC failure
-stops the helper and clears the overlay. Systemd also runs cleanup after an
-unexpected service exit. There is no automatic restart loop.
+Hyprland callbacks, replaces `hl.bind`, or reads `/dev/input`. Temporary IPC/device failures clear the overlay when possible and keep the
+enabled helper waiting for recovery, with retries slowing from 250 ms to at most
+once every five seconds. Resume forces a fresh controller connection and binding
+query. `RGB on` means enabled, including while waiting; turning it off interrupts
+the recovery wait. Fatal configuration errors still stop the helper, and systemd
+runs cleanup after exit. Recovery does not enable the helper at login or when off.
 
 The bitmap uses LED positions from LenovoLegionToolkit's ISO keyboard layout.
 The original theme is kept in the keyboard; no personal preset is bundled or
@@ -229,6 +300,8 @@ journalctl --user -u legion-shortcut-lights.service -n 50
 /usr/bin/python3 -I tests/test_helper.py
 /usr/bin/python3 -I tests/test_install.py
 /usr/bin/python3 -I tests/test_safety.py
+/usr/bin/python3 -I tests/test_resume.py
+/usr/bin/python3 -I tests/test_controller_setup.py
 omarchy plugin validate .
 ```
 

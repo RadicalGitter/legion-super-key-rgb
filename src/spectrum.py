@@ -1,6 +1,7 @@
 """Spectrum 048d:c997 transport; protocol derived from LenovoLegionToolkit.
 SPDX-License-Identifier: GPL-3.0-only
 """
+import errno
 import fcntl
 import os
 from pathlib import Path
@@ -14,8 +15,14 @@ class Controller:
     def __init__(self):
         matches = []
         for entry in Path('/sys/class/hidraw').glob('hidraw*'):
-            if 'HID_ID=0003:0000048D:0000C997' in (entry / 'device/uevent').read_text():
+            try:
+                identity = (entry / 'device/uevent').read_text()
+            except FileNotFoundError:
+                continue  # Hot-unplug while enumerating.
+            if 'HID_ID=0003:0000048D:0000C997' in identity:
                 matches.append(Path('/dev') / entry.name)
+        if not matches:
+            raise FileNotFoundError(errno.ENODEV, 'Spectrum controller is not available yet')
         if len(matches) != 1:
             raise RuntimeError(f'Expected one 048d:c997 controller, found {len(matches)}')
         self.fd = os.open(matches[0], os.O_RDWR | os.O_CLOEXEC)
@@ -42,7 +49,7 @@ class Controller:
         data[0] = 7
         fcntl.ioctl(self.fd, (3 << 30) | (SIZE << 16) | (ord('H') << 8) | 7, data, True)
         if data[0] != 7 or data[1] != operation:
-            raise RuntimeError(f'Unexpected reply to {operation:02x}: {data[:8].hex()}')
+            raise OSError(errno.EIO, f'Unexpected reply to {operation:02x}: {data[:8].hex()}')
         if operation == 0xCC and data[4] != parameters[0]:
             raise RuntimeError('Controller returned a different profile; refusing to use it')
         return bytes(data)
