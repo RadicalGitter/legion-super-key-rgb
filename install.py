@@ -93,6 +93,8 @@ def main():
             active = run_command(['/usr/bin/systemctl','--user','is-active','--quiet','legion-shortcut-lights.service'], check=False)
             if active.returncode == 0:
                 run_command(['/usr/bin/systemctl','--user','stop','legion-shortcut-lights.service'])
+        if not a.no_reload:
+            run_command(['/usr/bin/systemctl','--user','disable','legion-shortcut-lights.service'], check=False)
         apply(base, a.uninstall)
         if not a.no_reload:
             run_command(['/usr/bin/systemctl','--user','daemon-reload'])

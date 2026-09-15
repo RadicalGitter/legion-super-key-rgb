@@ -394,12 +394,12 @@ def main():
             turn_on = args.action == 'on' or (args.action == 'toggle' and not active)
             if turn_on:
                 run_command(['/usr/bin/systemctl', '--user', 'import-environment', 'HYPRLAND_INSTANCE_SIGNATURE'])
-                systemctl('start')
+                systemctl('enable', '--now')
                 time.sleep(0.6)
                 if systemctl('is-active', '--quiet', check=False).returncode:
                     raise RuntimeError('Helper failed; see journalctl --user -u ' + UNIT)
             else:
-                systemctl('stop')
+                systemctl('disable', '--now')
             message = 'On — hold Super to show shortcuts' if turn_on else 'Off — normal keyboard theme'
             if not args.quiet:
                 print(message)

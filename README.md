@@ -11,7 +11,8 @@ restores your existing hardware lighting and animations.
 - Reads live bindings every five seconds and workspace occupancy every 100 ms.
 - Checks modifiers every 20 ms. Restoring the profile includes a 50 ms firmware query.
 - Optional Omarchy bar button, terminal toggle, and Super+Alt+K binding.
-- Off by default, no login autostart, no compositor hooks or monkey-patching.
+- Off on installation; the toggle remembers on/off across logins and reboots.
+  No compositor hooks or monkey-patching.
 
 ## Shortcut colors
 
@@ -63,7 +64,8 @@ cd legion-super-key-rgb
 This installs a command in `~/.local/bin`, four Python files in
 `~/.local/share/legion-super-key-rgb`, and a user service. It backs up any existing
 files it replaces and refuses updates over locally modified installed files.
-It stops an already-running helper and leaves it **off**. It does not edit your
+Installing or updating stops an already-running helper, disables login startup,
+and leaves it **off**. Turn it on again after updating if desired. It does not edit your
 Hyprland configuration, change the bar, install packages, run privileged commands,
 or write any keyboard effect profiles. Ensure `~/.local/bin` is on your PATH.
 
@@ -183,7 +185,9 @@ o.bind("SUPER + ALT + K", "Toggle keyboard shortcut lighting", "legion-shortcut-
 ```
 
 Validate with `hyprctl reload` followed by `hyprctl configerrors`.
-The shortcut only starts/stops the external helper. Nothing runs at login.
+The shortcut starts/stops the external helper and remembers that choice using
+systemd user-service enablement. When on, it starts after the graphical session
+is ready on subsequent logins; when off, it stays off across reboots.
 
 ## Optional Omarchy bar widget
 
@@ -209,7 +213,7 @@ enabled helper waiting for recovery, with retries slowing from 250 ms to at most
 once every five seconds. Resume forces a fresh controller connection and binding
 query. `RGB on` means enabled, including while waiting; turning it off interrupts
 the recovery wait. Fatal configuration errors still stop the helper, and systemd
-runs cleanup after exit. Recovery does not enable the helper at login or when off.
+runs cleanup after exit. Recovery never turns an explicitly disabled helper back on.
 
 The bitmap uses LED positions from LenovoLegionToolkit's ISO keyboard layout.
 The original theme is kept in the keyboard; no personal preset is bundled or

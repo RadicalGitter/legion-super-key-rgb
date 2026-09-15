@@ -15,3 +15,6 @@ KillMode=control-group
 TimeoutStopSec=4
 UMask=0077
 NoNewPrivileges=yes
+
+[Install]
+WantedBy=graphical-session.target
