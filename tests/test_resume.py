@@ -90,3 +90,37 @@ else: raise AssertionError('Expected fatal configuration error')
 assert not event.waits
 assert not m['recoverable'](PermissionError('unsafe path'))
 print('Passed: timeout/seat recovery, resume reopening, empty keyboards, capped backoff, stop while waiting, fatal error propagation')
+
+# Use real flock contention: a boot theme writer owns the lock before the helper.
+import fcntl
+with tempfile.TemporaryDirectory() as tmp, m['SafeDir'](Path(tmp)) as state:
+    with state.lock('controller.lock') as held:
+        event = Event()
+        def release(delay):
+            Event.wait(event, delay)
+            fcntl.flock(held, fcntl.LOCK_UN)
+        with patch.object(event, 'wait', side_effect=release):
+            with m['controller_lock'](state, event) as acquired:
+                assert acquired and event.waits == [.25]
+                try:
+                    with state.lock('controller.lock'): pass
+                except BlockingIOError: pass
+                else: raise AssertionError('Helper must own the lock after waiting')
+    with state.lock('controller.lock'):
+        event = Event(); event.stop_after = 1
+        with m['controller_lock'](state, event) as acquired:
+            assert not acquired and event.stopped
+        event = Event()
+        with patch('time.monotonic', side_effect=lambda: event.now):
+            with m['controller_lock'](state, event, deadline=.5) as acquired:
+                assert not acquired and event.waits == [.25, .25]
+    event = Event()
+    try:
+        with m['controller_lock'](state, event) as acquired:
+            assert acquired
+            raise BlockingIOError('protected code failure')
+    except BlockingIOError as error:
+        assert str(error) == 'protected code failure'
+    else: raise AssertionError('Protected errors must not be swallowed as contention')
+    with state.lock('controller.lock'): pass  # No leaked lock.
+print('Passed: real lock contention, startup wait, cancellation, preview deadline, protected-error propagation')

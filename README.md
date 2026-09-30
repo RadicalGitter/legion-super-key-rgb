@@ -169,7 +169,9 @@ legion-shortcut-lights off
 ```
 
 When on, hold Super and try adding Shift, Ctrl, or Alt. Hardware commands are
-serialized with the existing `~/.local/state/legion-rgb/controller.lock`. Avoid
+serialized with the existing `~/.local/state/legion-rgb/controller.lock`. Startup
+waits interruptibly if another writer holds the lock. If the optional local
+`legion-pink-keyboard.service` exists, the helper starts after it completes. Avoid
 running another RGB controller tool simultaneously. Stop this helper before
 changing hardware profiles with Fn+Space; it queries the active profile when
 restoring, but changing profiles mid-overlay is not verified.

@@ -5,6 +5,7 @@ Read-only Lua queries go through the IPC socket; no callbacks or globals are
 installed. Hardware protocol and ISO positions: LenovoLegionToolkit (see README).
 """
 import argparse
+import contextlib
 import errno
 import threading
 import ctypes as C
@@ -265,6 +266,27 @@ def recoverable(error):
         }))
 
 
+@contextlib.contextmanager
+def controller_lock(state_dir, stopping, deadline=None):
+    # Catch only acquisition contention, never exceptions from protected code.
+    # Unsafe paths/ownership still fail closed inside SafeDir.lock.
+    with contextlib.ExitStack() as stack:
+        announced = False
+        while not stopping.is_set() and (deadline is None or time.monotonic() < deadline):
+            try:
+                stack.enter_context(state_dir.lock('controller.lock'))
+            except BlockingIOError:
+                if not announced:
+                    print('Waiting for another RGB writer to release the controller', flush=True)
+                    announced = True
+                delay = 0.25 if deadline is None else min(0.25, max(0, deadline - time.monotonic()))
+                stopping.wait(delay)
+            else:
+                yield True
+                return
+        yield False
+
+
 def run(preview=False, duration=None):
     available = set(RGB['AVAILABLE_KEYS'])
     stopping = threading.Event()
@@ -272,9 +294,12 @@ def run(preview=False, duration=None):
         stopping.set()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    lock_deadline = None if duration is None else time.monotonic() + duration
     # Keep the lock across recovery so another RGB writer cannot race retries.
     # Filesystem trust/lock failures occur outside the recoverable I/O block.
-    with SafeDir(STATE, create=True) as state_dir, state_dir.lock('controller.lock'):
+    with SafeDir(STATE, create=True) as state_dir, controller_lock(state_dir, stopping, lock_deadline) as acquired:
+        if not acquired:
+            return
         controller = None
         overlay, previous = False, None
         occupied, workspace_checked = frozenset(), 0.0

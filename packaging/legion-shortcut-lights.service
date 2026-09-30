@@ -1,7 +1,8 @@
 [Unit]
 Description=Optional Legion RGB shortcut lighting
 PartOf=graphical-session.target
-After=graphical-session.target
+# If the optional local theme loader exists, let it finish before taking the lock.
+After=graphical-session.target legion-pink-keyboard.service
 
 [Service]
 Type=exec
